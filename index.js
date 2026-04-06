@@ -22,6 +22,7 @@ app.get("/create-payment", (req, res) => {
     status: "pending",
     amount: parseInt(amount),
     createdAt: Date.now()
+    dispensed: false   // 👈 เพิ่ม
   };
 
   const qrPayload = `https://payment-server-jydm.onrender.com/pay?id=${id}`;
@@ -56,6 +57,7 @@ app.get("/check-payment", (req, res) => {
       id: id,
       status: payments[id].status,
       amount: payments[id].amount
+      dispensed: payments[id].dispensed  // 👈 เพิ่ม
     });
   } else {
     res.status(404).json({ status: "notfound" });
