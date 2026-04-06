@@ -15,7 +15,7 @@ app.get("/create-payment", (req, res) => {
 
   res.json({
     id: id,
-    qr: `https://your-app.onrender.com/pay?id=${id}`
+    qr: `https://payment-server-jydm.onrender.com`
   });
 });
 
