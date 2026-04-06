@@ -1,4 +1,6 @@
 const express = require("express");
+const axios = require("axios");
+
 const app = express();
 
 app.use(express.json());
@@ -22,8 +24,6 @@ app.get("/create-payment", (req, res) => {
     createdAt: Date.now()
   };
 
-  // สร้าง QR Payload (PromptPay format)
-  // สำหรับทดสอบ ให้ใช้เบอร์โทรตัวอย่าง หรือ URL
   const qrPayload = `https://payment-server-jydm.onrender.com/pay?id=${id}`;
   
   res.json({
@@ -64,7 +64,7 @@ app.get("/check-payment", (req, res) => {
 
 // ============= Webhook Endpoints =============
 
-// ✅ Webhook สำหรับรับการแจ้งเตือนจาก EasySlip API หรือ n8n
+// Webhook สำหรับรับการแจ้งเตือนจาก n8n หรือ EasySlip
 app.post("/webhook/payment", (req, res) => {
   const { transaction_id, status, amount, reference } = req.body;
   
@@ -81,16 +81,13 @@ app.post("/webhook/payment", (req, res) => {
     
     console.log(`[WEBHOOK] Updated transaction ${transaction_id} -> ${status}`);
     
-    // ✅ เรียก Webhook ไปที่ ESP32 (ถ้าต้องการ)
-    // เรียก ESP32 Controller โดยตรง
-    const axios = require('axios');
-    const esp32Url = `http://[ESP32_IP]:8080/webhook`; // เปลี่ยนเป็น IP ของ ESP32
-    
-    axios.post(esp32Url, {
-      transaction_id: transaction_id,
-      status: "paid",
-      amount: amount
-    }).catch(err => console.log("[WEBHOOK] ESP32 not reachable:", err.message));
+    // เรียก ESP32 Controller (ถ้าต้องการ)
+    // const esp32Url = `http://192.168.x.x:8080/webhook`;
+    // axios.post(esp32Url, {
+    //   transaction_id: transaction_id,
+    //   status: "paid",
+    //   amount: amount
+    // }).catch(err => console.log("[WEBHOOK] ESP32 error:", err.message));
     
     res.json({ 
       received: true, 
@@ -98,7 +95,6 @@ app.post("/webhook/payment", (req, res) => {
       status: "updated"
     });
   } else {
-    // ถ้ายังไม่มี transaction_id ให้สร้างใหม่
     payments[transaction_id] = {
       status: status === "success" ? "paid" : "failed",
       amount: amount,
@@ -112,48 +108,7 @@ app.post("/webhook/payment", (req, res) => {
   }
 });
 
-// ✅ Webhook สำหรับรับการแจ้งเตือนจาก PromptPay (Thai QR Payment)
-app.post("/webhook/promptpay", (req, res) => {
-  const { reference, amount, sender, transactionId, status } = req.body;
-  
-  console.log(`[PROMPTPAY] Payment received:`, req.body);
-  
-  // ค้นหา transaction จาก reference หรือ amount + time
-  let foundId = null;
-  for (const [id, data] of Object.entries(payments)) {
-    if (data.amount === amount && data.status === "pending") {
-      // ตรวจสอบเวลาด้วย (ภายใน 5 นาที)
-      if (Date.now() - data.createdAt < 5 * 60 * 1000) {
-        foundId = id;
-        break;
-      }
-    }
-  }
-  
-  if (foundId) {
-    payments[foundId].status = "paid";
-    payments[foundId].paidAt = Date.now();
-    payments[foundId].sender = sender;
-    payments[foundId].transactionId = transactionId;
-    
-    console.log(`[PROMPTPAY] Matched transaction: ${foundId}`);
-    
-    // ส่งไป ESP32
-    const axios = require('axios');
-    axios.post(`http://[ESP32_IP]:8080/webhook`, {
-      transaction_id: foundId,
-      status: "paid",
-      amount: amount
-    }).catch(err => console.log("[WEBHOOK] ESP32 error:", err.message));
-    
-    res.json({ received: true, matched: foundId });
-  } else {
-    console.log(`[PROMPTPAY] No matching transaction found for amount: ${amount}`);
-    res.json({ received: true, matched: null });
-  }
-});
-
-// ✅ Webhook สำหรับทดสอบ (ส่งจาก HMI โดยตรง)
+// Webhook สำหรับทดสอบ (ส่งจาก HMI โดยตรง)
 app.post("/webhook/test", (req, res) => {
   const { transaction_id, action } = req.body;
   
@@ -168,7 +123,7 @@ app.post("/webhook/test", (req, res) => {
   }
 });
 
-// ✅ รับ Webhook จาก ESP32 (ส่งสถานะกลับ)
+// รับ Webhook จาก ESP32 (ส่งสถานะกลับ)
 app.post("/webhook/esp32", (req, res) => {
   const { transaction_id, result, motor_id, price } = req.body;
   
@@ -220,7 +175,7 @@ app.listen(PORT, () => {
   console.log(`   - GET  /pay?id=xxx`);
   console.log(`   - GET  /check-payment?id=xxx`);
   console.log(`   - POST /webhook/payment`);
-  console.log(`   - POST /webhook/promptpay`);
   console.log(`   - POST /webhook/test`);
+  console.log(`   - POST /webhook/esp32`);
   console.log(`   - GET  /admin/transactions`);
 });
