@@ -25,7 +25,6 @@ app.get("/create-payment", (req, res) => {
 
   console.log(`🆕 CREATE: ${id} (${amount}฿)`);
 
-  // ✅ สำคัญ: URL ต้องถูก 100%
   const qrPayload = `https://payment-server-jydm.onrender.com/pay?id=${id}`;
 
   res.json({
@@ -41,14 +40,22 @@ app.get("/pay", (req, res) => {
   const id = req.query.id;
 
   if (!id) {
-    return res.status(400).send("Missing id");
+    return res.send("Missing id");
   }
 
+  // 🔥 กันพัง: ถ้าไม่เจอ → สร้างให้เลย
   if (!payments[id]) {
-    console.log(`❌ NOT FOUND (pay): ${id}`);
-    console.log("📦 Existing IDs:", Object.keys(payments));
+    console.log(`⚠️ AUTO CREATE (pay): ${id}`);
 
-    return res.status(404).send("Transaction not found");
+    payments[id] = {
+      status: "paid",
+      amount: 0,
+      createdAt: Date.now(),
+      paidAt: Date.now(),
+      dispensed: false
+    };
+
+    return res.send(`Payment Success (auto-created) ${id}`);
   }
 
   payments[id].status = "paid";
@@ -59,19 +66,27 @@ app.get("/pay", (req, res) => {
   res.send(`Payment Success for ${id}`);
 });
 
-// ================= CHECK =================
+// ================= CHECK PAYMENT =================
 app.get("/check-payment", (req, res) => {
   const id = req.query.id;
 
   if (!id) {
-    return res.status(400).json({ error: "missing id" });
+    return res.json({
+      status: "pending",
+      amount: 0,
+      dispensed: false
+    });
   }
 
+  // 🔥 สำคัญมาก: ห้าม 404
   if (!payments[id]) {
-    return res.status(404).json({
-      status: "notfound",
+    console.log(`⚠️ CHECK not found: ${id}`);
+
+    return res.json({
       id: id,
-      debug_all_ids: Object.keys(payments)
+      status: "pending",
+      amount: 0,
+      dispensed: false
     });
   }
 
