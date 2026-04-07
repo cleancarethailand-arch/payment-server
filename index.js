@@ -25,6 +25,7 @@ app.get("/create-payment", (req, res) => {
 
   console.log(`🆕 CREATE: ${id} (${amount}฿)`);
 
+  // ✅ สำคัญ: URL ต้องถูก 100%
   const qrPayload = `https://payment-server-jydm.onrender.com/pay?id=${id}`;
 
   res.json({
@@ -35,7 +36,7 @@ app.get("/create-payment", (req, res) => {
   });
 });
 
-// ================= TEST PAYMENT =================
+// ================= PAY =================
 app.get("/pay", (req, res) => {
   const id = req.query.id;
 
@@ -43,20 +44,22 @@ app.get("/pay", (req, res) => {
     return res.status(400).send("Missing id");
   }
 
-  if (payments[id]) {
-    payments[id].status = "paid";
-    payments[id].paidAt = Date.now();
-
-    console.log(`💰 PAID: ${id}`);
-
-    res.send(`Payment Success for ${id}`);
-  } else {
+  if (!payments[id]) {
     console.log(`❌ NOT FOUND (pay): ${id}`);
-    res.status(404).send("Transaction not found");
+    console.log("📦 Existing IDs:", Object.keys(payments));
+
+    return res.status(404).send("Transaction not found");
   }
+
+  payments[id].status = "paid";
+  payments[id].paidAt = Date.now();
+
+  console.log(`💰 PAID: ${id}`);
+
+  res.send(`Payment Success for ${id}`);
 });
 
-// ================= CHECK PAYMENT =================
+// ================= CHECK =================
 app.get("/check-payment", (req, res) => {
   const id = req.query.id;
 
@@ -68,12 +71,12 @@ app.get("/check-payment", (req, res) => {
     return res.status(404).json({
       status: "notfound",
       id: id,
-      all_ids: Object.keys(payments) // 🔥 debug สำคัญ
+      debug_all_ids: Object.keys(payments)
     });
   }
 
   res.json({
-    id: id,
+    id,
     status: payments[id].status,
     amount: payments[id].amount,
     dispensed: payments[id].dispensed
@@ -84,59 +87,25 @@ app.get("/check-payment", (req, res) => {
 app.post("/confirm-dispense", (req, res) => {
   const { id } = req.body;
 
-  if (payments[id]) {
-    payments[id].dispensed = true;
-    payments[id].dispenseAt = Date.now();
-
-    console.log(`⚙️ DISPENSED: ${id}`);
-
-    res.json({ success: true });
-  } else {
-    res.json({ success: false });
+  if (!payments[id]) {
+    return res.json({ success: false });
   }
+
+  payments[id].dispensed = true;
+  payments[id].dispenseAt = Date.now();
+
+  console.log(`⚙️ DISPENSED: ${id}`);
+
+  res.json({ success: true });
 });
 
-// ================= WEBHOOK PAYMENT =================
-app.post("/webhook/payment", (req, res) => {
-  const { transaction_id, status, amount, reference } = req.body;
-
-  console.log("[WEBHOOK] Received:", req.body);
-
-  if (!transaction_id) {
-    return res.status(400).json({ error: "Missing transaction_id" });
-  }
-
-  if (payments[transaction_id]) {
-    payments[transaction_id].status =
-      status === "success" ? "paid" : "failed";
-
-    payments[transaction_id].webhookReceivedAt = Date.now();
-    payments[transaction_id].reference = reference;
-
-    console.log(`✅ UPDATED: ${transaction_id} -> ${status}`);
-  } else {
-    payments[transaction_id] = {
-      status: status === "success" ? "paid" : "failed",
-      amount: amount,
-      createdAt: Date.now(),
-      webhookReceivedAt: Date.now(),
-      reference: reference,
-      dispensed: false
-    };
-
-    console.log(`🆕 CREATED FROM WEBHOOK: ${transaction_id}`);
-  }
-
-  res.json({ received: true });
-});
-
-// ================= ADMIN =================
-app.get("/admin/transactions", (req, res) => {
+// ================= DEBUG =================
+app.get("/debug", (req, res) => {
   res.json(payments);
 });
 
 // ================= CLEANUP =================
-app.post("/admin/cleanup", (req, res) => {
+app.post("/cleanup", (req, res) => {
   const now = Date.now();
   let removed = 0;
 
