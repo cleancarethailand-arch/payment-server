@@ -14,7 +14,6 @@ app.get("/", (req, res) => {
 app.get("/create-payment", (req, res) => {
   const amount = parseInt(req.query.amount || 0);
 
-  // ใช้ timestamp ปลอดภัยกว่า
   const id = Date.now().toString();
 
   payments[id] = {
@@ -23,6 +22,8 @@ app.get("/create-payment", (req, res) => {
     createdAt: Date.now(),
     dispensed: false
   };
+
+  console.log(`🆕 CREATE: ${id} (${amount}฿)`);
 
   const qrPayload = `https://payment-server-jydm.onrender.com/pay?id=${id}`;
 
@@ -38,14 +39,19 @@ app.get("/create-payment", (req, res) => {
 app.get("/pay", (req, res) => {
   const id = req.query.id;
 
+  if (!id) {
+    return res.status(400).send("Missing id");
+  }
+
   if (payments[id]) {
     payments[id].status = "paid";
     payments[id].paidAt = Date.now();
 
-    console.log(`💰 Paid: ${id}`);
+    console.log(`💰 PAID: ${id}`);
 
     res.send(`Payment Success for ${id}`);
   } else {
+    console.log(`❌ NOT FOUND (pay): ${id}`);
     res.status(404).send("Transaction not found");
   }
 });
@@ -54,16 +60,24 @@ app.get("/pay", (req, res) => {
 app.get("/check-payment", (req, res) => {
   const id = req.query.id;
 
-  if (payments[id]) {
-    res.json({
-      id: id,
-      status: payments[id].status,
-      amount: payments[id].amount,
-      dispensed: payments[id].dispensed
-    });
-  } else {
-    res.status(404).json({ status: "notfound" });
+  if (!id) {
+    return res.status(400).json({ error: "missing id" });
   }
+
+  if (!payments[id]) {
+    return res.status(404).json({
+      status: "notfound",
+      id: id,
+      all_ids: Object.keys(payments) // 🔥 debug สำคัญ
+    });
+  }
+
+  res.json({
+    id: id,
+    status: payments[id].status,
+    amount: payments[id].amount,
+    dispensed: payments[id].dispensed
+  });
 });
 
 // ================= CONFIRM DISPENSE =================
@@ -74,7 +88,7 @@ app.post("/confirm-dispense", (req, res) => {
     payments[id].dispensed = true;
     payments[id].dispenseAt = Date.now();
 
-    console.log(`⚙️ Dispensed: ${id}`);
+    console.log(`⚙️ DISPENSED: ${id}`);
 
     res.json({ success: true });
   } else {
@@ -99,7 +113,7 @@ app.post("/webhook/payment", (req, res) => {
     payments[transaction_id].webhookReceivedAt = Date.now();
     payments[transaction_id].reference = reference;
 
-    console.log(`✅ Updated ${transaction_id} -> ${status}`);
+    console.log(`✅ UPDATED: ${transaction_id} -> ${status}`);
   } else {
     payments[transaction_id] = {
       status: status === "success" ? "paid" : "failed",
@@ -110,36 +124,7 @@ app.post("/webhook/payment", (req, res) => {
       dispensed: false
     };
 
-    console.log(`🆕 Created ${transaction_id}`);
-  }
-
-  res.json({ received: true });
-});
-
-// ================= TEST WEBHOOK =================
-app.post("/webhook/test", (req, res) => {
-  const { transaction_id, action } = req.body;
-
-  if (action === "confirm" && payments[transaction_id]) {
-    payments[transaction_id].status = "paid";
-
-    console.log(`🧪 TEST Paid: ${transaction_id}`);
-
-    res.json({ success: true });
-  } else {
-    res.json({ success: false });
-  }
-});
-
-// ================= ESP32 CALLBACK =================
-app.post("/webhook/esp32", (req, res) => {
-  const { transaction_id, result } = req.body;
-
-  console.log(`🤖 ESP32 result: ${transaction_id} -> ${result}`);
-
-  if (payments[transaction_id]) {
-    payments[transaction_id].dispenseResult = result;
-    payments[transaction_id].dispenseAt = Date.now();
+    console.log(`🆕 CREATED FROM WEBHOOK: ${transaction_id}`);
   }
 
   res.json({ received: true });
