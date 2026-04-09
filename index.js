@@ -5,20 +5,36 @@ const cors = require("cors");
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // เพิ่ม CORS สำหรับให้ ESP32 เข้าถึง
+app.use(cors());
 
 // ================= SCB Configuration =================
 const SCB_CONFIG = {
-  apiKey: "l73301f1cc935f4dfebb5486fa686e14a0",     
-  apiSecret: "20cdfa2512814a90b5b53ff59f103820", 
-  merchantID: "SANDBOX_MERCHANT_ID",   
-  terminalID: "SANDBOX_TERMINAL_ID",   
+  apiKey: "l73301f1cc935f4dfebb5486fa686e14a0",
+  apiSecret: "20cdfa2512814a90b5b53ff59f103820",
+  merchantID: "SANDBOX_MERCHANT_ID",
+  terminalID: "SANDBOX_TERMINAL_ID",
   baseURL: "https://api-sandbox.partners.scb/partners/sandbox/v1"
 };
 
+// ================= Global Variables =================
 let payments = {};
 let scb_access_token = null;
 let token_expiry = 0;
+const useMockQR = true; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
+
+// ================= Helper Functions =================
+function getLocalIP() {
+  const { networkInterfaces } = require('os');
+  const nets = networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address;
+      }
+    }
+  }
+  return 'localhost';
+}
 
 // ================= Get SCB Access Token =================
 async function getSCBAccessToken() {
@@ -60,11 +76,10 @@ async function getSCBAccessToken() {
   }
 }
 
-// ================= Endpoint สำหรับ HMI (ESP32) =================
-// สร้าง QR Code สำหรับการชำระเงิน
+// ================= Create QR Code API =================
 app.post("/api/create-qr", async (req, res) => {
   try {
-    const { amount, currency = "THB", reference } = req.body;
+    const { amount, currency = "THB", reference = "" } = req.body;
     
     if (!amount || amount <= 0) {
       return res.status(400).json({ 
@@ -75,12 +90,7 @@ app.post("/api/create-qr", async (req, res) => {
 
     console.log(`📱 Creating QR for amount: ${amount} THB`);
 
-    // Generate unique transaction ID
     const transactionId = `TXN${Date.now()}${Math.floor(Math.random() * 10000)}`;
-    
-    // ใช้ Mock QR สำหรับทดสอบ (ถ้า SCB API ยังไม่พร้อม)
-    const useMockQR = true; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
-    
     let qrRawData;
     
     if (useMockQR) {
@@ -96,7 +106,7 @@ app.post("/api/create-qr", async (req, res) => {
         transactionId: transactionId,
         merchantId: SCB_CONFIG.merchantID,
         terminalId: SCB_CONFIG.terminalID,
-        callbackUrl: `${process.env.SERVER_URL || 'https://your-server.com'}/webhook/payment`
+        callbackUrl: `https://payment-server-jydm.onrender.com/webhook/payment`
       };
 
       const response = await axios.post(
@@ -114,12 +124,12 @@ app.post("/api/create-qr", async (req, res) => {
       qrRawData = response.data.data.qrRawData;
     }
 
-    // Store payment info
     payments[transactionId] = {
       status: "pending",
       amount: amount,
+      currency: currency,
       createdAt: Date.now(),
-      reference: reference || "",
+      reference: reference,
       dispensed: false,
       qrRawData: qrRawData
     };
@@ -143,7 +153,7 @@ app.post("/api/create-qr", async (req, res) => {
   }
 });
 
-// ตรวจสอบสถานะการชำระเงิน
+// ================= Check Payment Status API =================
 app.get("/api/check-payment", async (req, res) => {
   const transactionId = req.query.transaction_id;
 
@@ -156,7 +166,6 @@ app.get("/api/check-payment", async (req, res) => {
 
   console.log(`🔍 Checking payment: ${transactionId}`);
 
-  // ถ้ายังไม่มี transaction ในระบบ
   if (!payments[transactionId]) {
     return res.json({
       success: true,
@@ -168,7 +177,6 @@ app.get("/api/check-payment", async (req, res) => {
 
   const payment = payments[transactionId];
 
-  // ถ้าจ่ายแล้ว
   if (payment.status === "paid") {
     return res.json({
       success: true,
@@ -178,7 +186,7 @@ app.get("/api/check-payment", async (req, res) => {
     });
   }
 
-  // ถ้ายัง pending ให้ตรวจสอบกับ SCB (ถ้าใช้ SCB จริง)
+  // ถ้าใช้ SCB จริง ให้ตรวจสอบกับ SCB API
   if (payment.status === "pending" && !useMockQR) {
     try {
       const token = await getSCBAccessToken();
@@ -213,7 +221,7 @@ app.get("/api/check-payment", async (req, res) => {
   });
 });
 
-// ยืนยันการจ่ายน้ำยาแล้ว
+// ================= Confirm Dispense API =================
 app.post("/api/confirm-dispense", (req, res) => {
   const { transaction_id } = req.body;
 
@@ -259,40 +267,26 @@ app.post("/webhook/payment", (req, res) => {
   }
 });
 
-// ================= Mock Payment สำหรับทดสอบ =================
-// จำลองการจ่ายเงิน (ใช้ใน Browser สำหรับทดสอบ)
+// ================= Mock Payment (สำหรับทดสอบ) =================
 app.get("/mock-pay/:id", (req, res) => {
   const id = req.params.id;
 
   if (!payments[id]) {
     return res.status(404).send(`
+      <!DOCTYPE html>
       <html>
-        <body>
-          <h1>❌ Payment Not Found</h1>
-          <p>Transaction ID: ${id}</p>
-          <button onclick="window.close()">Close</button>
-        </body>
-      </html>
-    `);
-  }
-
-  payments[id].status = "paid";
-  payments[id].paidAt = Date.now();
-
-  console.log(`💰 MOCK PAID: ${id}`);
-
-  res.send(`
-    <html>
       <head>
+        <meta charset="UTF-8">
+        <title>Payment Error</title>
         <style>
           body {
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Arial, sans-serif;
             text-align: center;
             padding: 50px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
           }
-          .success {
+          .error-box {
             background: rgba(255,255,255,0.2);
             padding: 30px;
             border-radius: 20px;
@@ -309,22 +303,83 @@ app.get("/mock-pay/:id", (req, res) => {
             color: #667eea;
             font-weight: bold;
           }
-          button:hover {
-            transform: scale(1.05);
-          }
         </style>
       </head>
       <body>
-        <div class="success">
-          <h1>✅ Payment Success (Mock)</h1>
+        <div class="error-box">
+          <h1>❌ Transaction Not Found</h1>
           <p>Transaction ID: ${id}</p>
-          <p>Amount: ${payments[id].amount} ฿</p>
           <button onclick="window.close()">Close Window</button>
         </div>
-        <script>
-          setTimeout(() => window.close(), 3000);
-        </script>
       </body>
+      </html>
+    `);
+  }
+
+  payments[id].status = "paid";
+  payments[id].paidAt = Date.now();
+
+  console.log(`💰 MOCK PAID: ${id} (${payments[id].amount} THB)`);
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>Payment Success</title>
+      <style>
+        body {
+          font-family: 'Segoe UI', Arial, sans-serif;
+          text-align: center;
+          padding: 50px;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+        }
+        .success-box {
+          background: rgba(255,255,255,0.2);
+          padding: 30px;
+          border-radius: 20px;
+          display: inline-block;
+          animation: fadeIn 0.5s ease-in;
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: scale(0.9); }
+          to { opacity: 1; transform: scale(1); }
+        }
+        .amount {
+          font-size: 36px;
+          font-weight: bold;
+          margin: 20px 0;
+        }
+        button {
+          background: white;
+          border: none;
+          padding: 10px 30px;
+          font-size: 18px;
+          border-radius: 25px;
+          margin-top: 20px;
+          cursor: pointer;
+          color: #667eea;
+          font-weight: bold;
+        }
+        button:hover {
+          transform: scale(1.05);
+        }
+      </style>
+    </head>
+    <body>
+      <div class="success-box">
+        <h1>✅ Payment Successful!</h1>
+        <p>Transaction ID:</p>
+        <div class="amount">${id}</div>
+        <p>Amount: ${payments[id].amount} ${payments[id].currency || 'THB'}</p>
+        <p>Time: ${new Date().toLocaleString('th-TH')}</p>
+        <button onclick="window.close()">Close Window</button>
+      </div>
+      <script>
+        setTimeout(() => window.close(), 5000);
+      </script>
+    </body>
     </html>
   `);
 });
@@ -358,93 +413,100 @@ app.get("/dashboard", (req, res) => {
   }
   
   res.send(`
+    <!DOCTYPE html>
     <html>
-      <head>
-        <style>
-          body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 20px;
-            background: #f5f5f5;
-          }
-          h1 { color: #333; }
-          .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-          }
-          .stat-card {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            text-align: center;
-          }
-          .stat-value {
-            font-size: 32px;
-            font-weight: bold;
-            color: #667eea;
-          }
-          table {
-            width: 100%;
-            background: white;
-            border-collapse: collapse;
-            border-radius: 10px;
-            overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-          }
-          th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-          }
-          th {
-            background: #667eea;
-            color: white;
-          }
-          .status-paid { color: green; font-weight: bold; }
-          .status-pending { color: orange; font-weight: bold; }
-          .dispensed-yes { color: green; }
-          .dispensed-no { color: red; }
-        </style>
-      </head>
-      <body>
-        <h1>💰 Payment Server Dashboard</h1>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>CleanCare Payment Server</title>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          background: #f5f5f5;
+          padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #333; margin-bottom: 20px; }
+        .stats {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 20px;
+          margin-bottom: 30px;
+        }
+        .stat-card {
+          background: white;
+          padding: 20px;
+          border-radius: 10px;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          text-align: center;
+        }
+        .stat-label { font-size: 14px; color: #666; margin-bottom: 10px; }
+        .stat-value { font-size: 32px; font-weight: bold; color: #667eea; }
+        .server-status {
+          background: white;
+          padding: 15px 20px;
+          border-radius: 10px;
+          margin-bottom: 20px;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status-online { color: #4CAF50; font-weight: bold; }
+        table {
+          width: 100%;
+          background: white;
+          border-collapse: collapse;
+          border-radius: 10px;
+          overflow: hidden;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        th { background: #667eea; color: white; padding: 12px; text-align: left; }
+        td { padding: 12px; border-bottom: 1px solid #ddd; }
+        tr:hover { background: #f9f9f9; }
+        .status-paid { color: #4CAF50; font-weight: bold; }
+        .status-pending { color: #FF9800; font-weight: bold; }
+        .mock-btn {
+          background: #4CAF50;
+          color: white;
+          padding: 5px 10px;
+          text-decoration: none;
+          border-radius: 5px;
+          display: inline-block;
+        }
+        .mock-btn:hover { background: #45a049; }
+        .refresh-btn {
+          background: #667eea;
+          color: white;
+          border: none;
+          padding: 8px 16px;
+          border-radius: 5px;
+          cursor: pointer;
+          margin-bottom: 20px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>💰 CleanCare Payment Server</h1>
         
-        <div class="stats">
-          <div class="stat-card">
-            <div>Total Transactions</div>
-            <div class="stat-value">${stats.total}</div>
-          </div>
-          <div class="stat-card">
-            <div>Paid</div>
-            <div class="stat-value">${stats.paid}</div>
-          </div>
-          <div class="stat-card">
-            <div>Pending</div>
-            <div class="stat-value">${stats.pending}</div>
-          </div>
-          <div class="stat-card">
-            <div>Dispensed</div>
-            <div class="stat-value">${stats.dispensed}</div>
-          </div>
-          <div class="stat-card">
-            <div>Total Amount</div>
-            <div class="stat-value">${stats.totalAmount} ฿</div>
-          </div>
+        <div class="server-status">
+          <strong>🔧 Server Status:</strong> <span class="status-online">✅ Online</span><br>
+          <strong>📡 Mode:</strong> ${useMockQR ? '🔬 MOCK MODE (Testing)' : '🏦 SCB PRODUCTION'}<br>
+          <strong>⏰ Current Time:</strong> ${new Date().toLocaleString('th-TH')}
         </div>
         
+        <div class="stats">
+          <div class="stat-card"><div class="stat-label">Total</div><div class="stat-value">${stats.total}</div></div>
+          <div class="stat-card"><div class="stat-label">Paid</div><div class="stat-value" style="color:#4CAF50;">${stats.paid}</div></div>
+          <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" style="color:#FF9800;">${stats.pending}</div></div>
+          <div class="stat-card"><div class="stat-label">Dispensed</div><div class="stat-value">${stats.dispensed}</div></div>
+          <div class="stat-card"><div class="stat-label">Revenue</div><div class="stat-value">${stats.totalAmount} ฿</div></div>
+        </div>
+        
+        <button class="refresh-btn" onclick="location.reload()">🔄 Refresh</button>
+        
+        <h3>📋 Transactions</h3>
         <table>
-          <thead>
-            <tr>
-              <th>Transaction ID</th>
-              <th>Amount</th>
-              <th>Status</th>
-              <th>Created</th>
-              <th>Paid At</th>
-              <th>Dispensed</th>
-            </tr>
-          </thead>
+          <thead><tr><th>ID</th><th>Amount</th><th>Status</th><th>Created</th><th>Paid At</th><th>Action</th></tr></thead>
           <tbody>
             ${transactions.map(t => `
               <tr>
@@ -453,28 +515,28 @@ app.get("/dashboard", (req, res) => {
                 <td class="status-${t.status}">${t.status}</td>
                 <td>${t.createdAt}</td>
                 <td>${t.paidAt || '-'}</td>
-                <td class="dispensed-${t.dispensed ? 'yes' : 'no'}">${t.dispensed ? '✓' : '✗'}</td>
+                <td>${t.status === 'pending' ? `<a href="/mock-pay/${t.id}" class="mock-btn">💰 Mock Pay</a>` : (t.dispensed ? '✓' : '-')}</td>
               </tr>
             `).join('')}
+            ${transactions.length === 0 ? '<tr><td colspan="6" style="text-align:center">No transactions yet</td></tr>' : ''}
           </tbody>
         </table>
-      </body>
+      </div>
+    </body>
     </html>
   `);
 });
 
-// ================= Cleanup Old Transactions =================
+// ================= Cleanup API =================
 app.post("/api/cleanup", (req, res) => {
   const now = Date.now();
   let removed = 0;
 
   for (const [id, data] of Object.entries(payments)) {
-    // ลบรายการที่ pending นานเกิน 10 นาที
     if (data.status === "pending" && now - data.createdAt > 10 * 60 * 1000) {
       delete payments[id];
       removed++;
     }
-    // ลบรายการที่จ่ายแล้วและจ่ายน้ำยาแล้วนานเกิน 1 ชั่วโมง
     if (data.status === "paid" && data.dispensed && now - data.dispensedAt > 60 * 60 * 1000) {
       delete payments[id];
       removed++;
@@ -482,75 +544,17 @@ app.post("/api/cleanup", (req, res) => {
   }
 
   console.log(`🧹 Cleaned up ${removed} transactions`);
-  res.json({ 
-    success: true, 
-    removed, 
-    remaining: Object.keys(payments).length 
-  });
+  res.json({ success: true, removed, remaining: Object.keys(payments).length });
+});
+
+// ================= Health Check =================
+app.get("/health", (req, res) => {
+  res.json({ status: "healthy", uptime: process.uptime(), mode: useMockQR ? "mock" : "scb" });
 });
 
 // ================= Root =================
 app.get("/", (req, res) => {
-  res.send(`
-    <html>
-      <head>
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 50px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-          }
-          .container {
-            background: rgba(255,255,255,0.2);
-            padding: 40px;
-            border-radius: 20px;
-            display: inline-block;
-          }
-          h1 { margin: 0 0 20px 0; }
-          .endpoints {
-            text-align: left;
-            margin-top: 30px;
-          }
-          a {
-            color: white;
-            text-decoration: none;
-            display: inline-block;
-            margin: 5px;
-            padding: 10px 20px;
-            background: rgba(255,255,255,0.3);
-            border-radius: 10px;
-          }
-          a:hover {
-            background: rgba(255,255,255,0.5);
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>🚀 CleanCare Payment Server</h1>
-          <p>SCB Payment Gateway Integration</p>
-          <p>Status: <strong>${SCB_CONFIG.baseURL.includes("sandbox") ? "SANDBOX MODE" : "PRODUCTION MODE"}</strong></p>
-          
-          <div class="endpoints">
-            <h3>Endpoints for HMI:</h3>
-            <ul>
-              <li>POST /api/create-qr - Create QR Code</li>
-              <li>GET /api/check-payment - Check payment status</li>
-              <li>POST /api/confirm-dispense - Confirm dispense</li>
-            </ul>
-            
-            <h3>Management:</h3>
-            <ul>
-              <li><a href="/dashboard">📊 Dashboard</a></li>
-              <li><a href="/mock-pay/TXN_ID">💰 Mock Payment (Test)</a></li>
-            </ul>
-          </div>
-        </div>
-      </body>
-    </html>
-  `);
+  res.redirect("/dashboard");
 });
 
 // ================= Start Server =================
@@ -558,14 +562,24 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n========================================`);
-  console.log(`🚀 Payment Server Running`);
+  console.log(`🚀 CleanCare Payment Server`);
+  console.log(`========================================`);
   console.log(`📍 Local: http://localhost:${PORT}`);
-  console.log(`📍 Network: http://0.0.0.0:${PORT}`);
-  console.log(`📱 SCB Mode: ${SCB_CONFIG.baseURL.includes("sandbox") ? "SANDBOX" : "PRODUCTION"}`);
+  console.log(`📍 Network: http://${getLocalIP()}:${PORT}`);
+  console.log(`📍 Dashboard: http://${getLocalIP()}:${PORT}/dashboard`);
+  console.log(`📱 Mode: ${useMockQR ? 'MOCK (Testing)' : 'SCB PRODUCTION'}`);
   console.log(`========================================\n`);
 });
 
-// ตั้ง cleanup ทุก 10 นาที
+// Auto cleanup every 10 minutes
 setInterval(() => {
-  fetch(`http://localhost:${PORT}/api/cleanup`, { method: 'POST' });
+  const now = Date.now();
+  let removed = 0;
+  for (const [id, data] of Object.entries(payments)) {
+    if (data.status === "pending" && now - data.createdAt > 10 * 60 * 1000) {
+      delete payments[id];
+      removed++;
+    }
+  }
+  if (removed > 0) console.log(`🧹 Auto cleanup: removed ${removed} expired transactions`);
 }, 10 * 60 * 1000);
