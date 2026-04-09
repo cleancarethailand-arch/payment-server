@@ -9,8 +9,8 @@ app.use(cors());
 
 // ================= SCB Configuration =================
 const SCB_CONFIG = {
-  apiKey: "l73301f1cc935f4dfebb5486fa686e14a0",
-  apiSecret: "20cdfa2512814a90b5b53ff59f103820",
+  apiKey: "l7fedbc78c5bc7425580e5195c4428dde4",
+  apiSecret: "0f0f63bc64e342fa960cfa15afdec0b0",
   merchantID: "SANDBOX_MERCHANT_ID",
   terminalID: "SANDBOX_TERMINAL_ID",
   baseURL: "https://api-sandbox.partners.scb/partners/sandbox/v1"
@@ -20,7 +20,8 @@ const SCB_CONFIG = {
 let payments = {};
 let scb_access_token = null;
 let token_expiry = 0;
-const useMockQR = true; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
+//const useMockQR = true; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
+const useMockQR = false; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
 
 // ================= Helper Functions =================
 function getLocalIP() {
