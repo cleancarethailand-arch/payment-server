@@ -1,0 +1,10 @@
+# render.yaml (optional)
+services:
+  - type: web
+    name: payment-server
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18.17.0
