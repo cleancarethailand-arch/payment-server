@@ -20,8 +20,8 @@ const SCB_CONFIG = {
 let payments = {};
 let scb_access_token = null;
 let token_expiry = 0;
-//const useMockQR = true; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
-const useMockQR = false; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
+const useMockQR = true; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
+//const useMockQR = false; // เปลี่ยนเป็น false เมื่อเชื่อมต่อ SCB จริง
 
 // ================= Helper Functions =================
 function getLocalIP() {
