@@ -12,7 +12,7 @@ app.use(cors());
 const SCB_CONFIG = {
   apiKey: "l766762dcf740d445b8392b0379b368d39",
   apiSecret: "7779eeb12f6b4fd7bfeb5a809103b8ef",
-  billerId: "014000009602327",              // 🔴 รหัสร้านค้าใหม่
+  billerId: "014000009602327",
   merchantId: "249209341376854",
   terminalId: "476454428917361",
   walletId: "014033139550354",
@@ -24,18 +24,23 @@ let payments = {};
 let scb_access_token = null;
 let token_expiry = 0;
 
-// ================= Get SCB Access Token =================
+// ================= Get SCB Access Token (แก้ไขให้ถูกต้อง) =================
 async function getSCBAccessToken() {
   if (scb_access_token && Date.now() < token_expiry) {
     return scb_access_token;
   }
 
   try {
+    const requestUId = crypto.randomUUID();
     const stringToSign = `${SCB_CONFIG.apiKey}|${Date.now()}`;
     const signature = crypto
       .createHmac("sha256", SCB_CONFIG.apiSecret)
       .update(stringToSign)
       .digest("base64");
+
+    console.log("🔑 Requesting SCB Token...");
+    console.log("  requestUId:", requestUId);
+    console.log("  resourceOwnerId:", SCB_CONFIG.apiKey);
 
     const response = await axios.post(
       `${SCB_CONFIG.baseURL}/oauth/token`,
@@ -47,7 +52,7 @@ async function getSCBAccessToken() {
         headers: {
           "Content-Type": "application/json",
           "resourceOwnerId": SCB_CONFIG.apiKey,
-          "requestUId": crypto.randomUUID(),
+          "requestUId": requestUId,
           "signature": signature
         }
       }
@@ -64,68 +69,70 @@ async function getSCBAccessToken() {
   }
 }
 
-// ================= สร้าง QR Code ผ่าน SCB Mae Manee =================
+// ================= สร้าง QR Code (Fallback to Mock if SCB fails) =================
+async function createMockQR(amount, transactionId) {
+  const mockPayload = `00020101021129370016A00000067701011101130066${transactionId}53037645804${amount}6304ABCD`;
+  const qrDataUrl = await QRCode.toDataURL(mockPayload, { width: 300 });
+  return qrDataUrl.split(',')[1];
+}
+
 app.post("/api/create-qr", async (req, res) => {
   try {
-    const { amount, currency = "THB", reference = "" } = req.body;
+    const { amount } = req.body;
     
     if (!amount || amount <= 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Invalid amount" 
-      });
+      return res.status(400).json({ success: false, message: "Invalid amount" });
     }
 
-    console.log(`📱 Creating SCB Mae Manee QR for amount: ${amount} THB`);
+    console.log(`📱 Creating QR for amount: ${amount} THB`);
 
     const transactionId = `TXN${Date.now()}${Math.floor(Math.random() * 10000)}`;
-    
-    const token = await getSCBAccessToken();
-    
-    // ใช้ Biller ID แทน Merchant ID
-    const qrPayload = {
-      billerId: SCB_CONFIG.billerId,        // 🔴 ใช้รหัสร้านค้า
-      amount: amount.toString(),
-      transactionId: transactionId,
-      qrType: "PP",
-      callbackUrl: "https://payment-server-jydm.onrender.com/webhook/scb",
-      reference: reference
-    };
-    
-    console.log("📤 QR Payload:", JSON.stringify(qrPayload, null, 2));
-    
-    const response = await axios.post(
-      `${SCB_CONFIG.baseURL}/payment/qr30/create`,
-      qrPayload,
-      {
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "requestUId": crypto.randomUUID()
-        }
+    let qrBase64;
+    let useSCB = false;  // เปลี่ยนเป็น true เมื่อ SCB พร้อม
+
+    if (useSCB) {
+      try {
+        const token = await getSCBAccessToken();
+        
+        const qrPayload = {
+          billerId: SCB_CONFIG.billerId,
+          amount: amount.toString(),
+          ref1: transactionId,
+          ref2: "CLEANCARE",
+          ref3: "VENDING01"
+        };
+        
+        const response = await axios.post(
+          `${SCB_CONFIG.baseURL}/v1/billpayment/billers/${SCB_CONFIG.billerId}/qr30`,
+          qrPayload,
+          {
+            headers: {
+              "Authorization": `Bearer ${token}`,
+              "Content-Type": "application/json",
+              "requestUId": crypto.randomUUID()
+            }
+          }
+        );
+        
+        const qrRawData = response.data.data.qrRawData;
+        const qrDataUrl = await QRCode.toDataURL(qrRawData, { width: 300 });
+        qrBase64 = qrDataUrl.split(',')[1];
+        console.log("✅ SCB QR created");
+      } catch (scbError) {
+        console.error("SCB API failed, using mock:", scbError.message);
+        qrBase64 = await createMockQR(amount, transactionId);
       }
-    );
-    
-    const qrRawData = response.data.data.qrRawData;
-    console.log("✅ QR Raw Data received");
-    
-    const qrDataUrl = await QRCode.toDataURL(qrRawData, {
-      width: 300,
-      margin: 2,
-      color: { dark: '#000000', light: '#FFFFFF' }
-    });
-    
-    const qrBase64 = qrDataUrl.split(',')[1];
-    
+    } else {
+      qrBase64 = await createMockQR(amount, transactionId);
+      console.log("✅ MOCK QR created");
+    }
+
     payments[transactionId] = {
       status: "pending",
       amount: amount,
       createdAt: Date.now(),
-      dispensed: false,
-      scbTransactionId: response.data.data.transactionId
+      dispensed: false
     };
-
-    console.log(`🆕 Created transaction: ${transactionId} (${amount}฿)`);
 
     res.json({
       success: true,
@@ -135,51 +142,21 @@ app.post("/api/create-qr", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ Create QR error:", error.response?.data || error.message);
-    res.status(500).json({ 
-      success: false, 
-      message: "Failed to create QR code",
-      error: error.response?.data || error.message
-    });
-  }
-});
-
-// ================= Webhook =================
-app.post("/webhook/scb", (req, res) => {
-  try {
-    const webhookData = req.body;
-    console.log("📞 SCB Webhook received:", JSON.stringify(webhookData, null, 2));
-
-    const transactionId = webhookData.transactionId || webhookData.data?.transactionId;
-    
-    if (transactionId && payments[transactionId]) {
-      payments[transactionId].status = "paid";
-      payments[transactionId].paidAt = Date.now();
-      console.log(`💰 PAID: ${transactionId}`);
-    }
-
-    res.status(200).send("OK");
-  } catch (error) {
-    console.error("❌ Webhook error:", error);
-    res.status(200).send("OK");
+    console.error("❌ Error:", error.message);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // ================= ตรวจสอบสถานะ =================
 app.get("/api/check-payment", (req, res) => {
-  const transactionId = req.query.transaction_id;
-  
-  if (!transactionId || !payments[transactionId]) {
+  const id = req.query.transaction_id;
+  if (!id || !payments[id]) {
     return res.json({ status: "pending", amount: 0 });
   }
-  
-  res.json({
-    status: payments[transactionId].status,
-    amount: payments[transactionId].amount
-  });
+  res.json({ status: payments[id].status, amount: payments[id].amount });
 });
 
-// ================= ยืนยันจ่ายน้ำยา =================
+// ================= Confirm Dispense =================
 app.post("/api/confirm-dispense", (req, res) => {
   const { transaction_id } = req.body;
   if (transaction_id && payments[transaction_id]) {
@@ -195,9 +172,9 @@ app.get("/mock-pay/:id", (req, res) => {
   if (payments[id]) {
     payments[id].status = "paid";
     payments[id].paidAt = Date.now();
-    console.log(`💰 MOCK PAID: ${id}`);
+    console.log(`💰 PAID: ${id}`);
   }
-  res.send(`<h1>✅ Paid: ${id}</h1><script>setTimeout(()=>window.close(),2000);</script>`);
+  res.send(`<h1>✅ Payment Confirmed: ${id}</h1><script>setTimeout(()=>window.close(),2000);</script>`);
 });
 
 // ================= Dashboard =================
@@ -217,7 +194,7 @@ app.get("/dashboard", (req, res) => {
         <td>${data.amount} ฿</td>
         <td style="color:${data.status === 'paid' ? 'green' : 'orange'}">${data.status}</td>
         <td>${new Date(data.createdAt).toLocaleString('th-TH')}</td>
-        <td>${data.status === 'pending' ? `<a href="/mock-pay/${id}" style="background:#4CAF50;color:white;padding:5px 10px;text-decoration:none;border-radius:5px;">💰 Mock Pay</a>` : '✓'}</td>
+        <td>${data.status === 'pending' ? `<a href="/mock-pay/${id}" style="background:#4CAF50;color:white;padding:5px 10px;text-decoration:none;border-radius:5px;">💰 Mock Pay</a>` : (data.dispensed ? '✓' : '-')}</td>
       </tr>
     `).join('');
   
@@ -226,7 +203,7 @@ app.get("/dashboard", (req, res) => {
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>SCB Mae Manee Payment</title>
+      <title>CleanCare Payment Server</title>
       <style>
         body { font-family: Arial; margin: 20px; background: #f5f5f5; }
         .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }
@@ -238,8 +215,8 @@ app.get("/dashboard", (req, res) => {
       </style>
     </head>
     <body>
-      <h1>💰 SCB Mae Manee Payment Server</h1>
-      <p>🔧 Status: ✅ Online | 🏦 Mode: SCB (Biller ID: ${SCB_CONFIG.billerId})</p>
+      <h1>💰 CleanCare Payment Server</h1>
+      <p>🔧 Status: ✅ Online | 📡 Mode: <strong>MOCK (Testing)</strong></p>
       <div class="stats">
         <div class="stat-card"><div>Total</div><div class="stat-value">${stats.total}</div></div>
         <div class="stat-card"><div>Paid</div><div class="stat-value" style="color:#4CAF50;">${stats.paid}</div></div>
@@ -247,20 +224,22 @@ app.get("/dashboard", (req, res) => {
         <div class="stat-card"><div>Revenue</div><div class="stat-value">${stats.totalAmount} ฿</div></div>
       </div>
       <h3>📋 Transactions</h3>
-      <table><thead><tr><th>ID</th><th>Amount</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5">No transactions</td></tr>'}</tbody></table>
+      <table>
+        <thead><tr><th>ID</th><th>Amount</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5">No transactions yet</td></tr>'}</tbody>
+      </table>
     </body>
     </html>
   `);
 });
 
 app.get("/", (req, res) => res.redirect("/dashboard"));
+app.get("/health", (req, res) => res.json({ status: "ok", mode: "mock" }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n========================================`);
-  console.log(`🚀 SCB Mae Manee Server`);
+  console.log(`🚀 CleanCare Payment Server`);
   console.log(`📍 http://localhost:${PORT}`);
-  console.log(`🏦 Biller ID: ${SCB_CONFIG.billerId}`);
   console.log(`========================================\n`);
 });
