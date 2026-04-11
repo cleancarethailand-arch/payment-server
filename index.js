@@ -13,10 +13,6 @@ const SCB_CONFIG = {
   apiKey: "l766762dcf740d445b8392b0379b368d39",
   apiSecret: "7779eeb12f6b4fd7bfeb5a809103b8ef",
   billerId: "014000009602327",
-  merchantId: "249209341376854",
-  terminalId: "476454428917361",
-  walletId: "014033139550354",
-  citizenId: "7694554531712",
   baseURL: "https://api-sandbox.partners.scb/partners/sandbox/v1"
 };
 
@@ -24,7 +20,7 @@ let payments = {};
 let scb_access_token = null;
 let token_expiry = 0;
 
-// ================= Get SCB Access Token (แก้ไขให้ถูกต้อง) =================
+// ================= Get SCB Access Token =================
 async function getSCBAccessToken() {
   if (scb_access_token && Date.now() < token_expiry) {
     return scb_access_token;
@@ -32,16 +28,6 @@ async function getSCBAccessToken() {
 
   try {
     const requestUId = crypto.randomUUID();
-    const stringToSign = `${SCB_CONFIG.apiKey}|${Date.now()}`;
-    const signature = crypto
-      .createHmac("sha256", SCB_CONFIG.apiSecret)
-      .update(stringToSign)
-      .digest("base64");
-
-    console.log("🔑 Requesting SCB Token...");
-    console.log("  requestUId:", requestUId);
-    console.log("  resourceOwnerId:", SCB_CONFIG.apiKey);
-
     const response = await axios.post(
       `${SCB_CONFIG.baseURL}/oauth/token`,
       {
@@ -52,8 +38,7 @@ async function getSCBAccessToken() {
         headers: {
           "Content-Type": "application/json",
           "resourceOwnerId": SCB_CONFIG.apiKey,
-          "requestUId": requestUId,
-          "signature": signature
+          "requestUId": requestUId
         }
       }
     );
@@ -69,13 +54,7 @@ async function getSCBAccessToken() {
   }
 }
 
-// ================= สร้าง QR Code (Fallback to Mock if SCB fails) =================
-async function createMockQR(amount, transactionId) {
-  const mockPayload = `00020101021129370016A00000067701011101130066${transactionId}53037645804${amount}6304ABCD`;
-  const qrDataUrl = await QRCode.toDataURL(mockPayload, { width: 300 });
-  return qrDataUrl.split(',')[1];
-}
-
+// ================= สร้าง QR Code =================
 app.post("/api/create-qr", async (req, res) => {
   try {
     const { amount } = req.body;
@@ -84,55 +63,52 @@ app.post("/api/create-qr", async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid amount" });
     }
 
-    console.log(`📱 Creating QR for amount: ${amount} THB`);
+    console.log(`📱 Creating SCB QR for amount: ${amount} THB`);
 
     const transactionId = `TXN${Date.now()}${Math.floor(Math.random() * 10000)}`;
-    let qrBase64;
-    let useSCB = false;  // เปลี่ยนเป็น true เมื่อ SCB พร้อม
-
-    if (useSCB) {
-      try {
-        const token = await getSCBAccessToken();
-        
-        const qrPayload = {
-          billerId: SCB_CONFIG.billerId,
-          amount: amount.toString(),
-          ref1: transactionId,
-          ref2: "CLEANCARE",
-          ref3: "VENDING01"
-        };
-        
-        const response = await axios.post(
-          `${SCB_CONFIG.baseURL}/v1/billpayment/billers/${SCB_CONFIG.billerId}/qr30`,
-          qrPayload,
-          {
-            headers: {
-              "Authorization": `Bearer ${token}`,
-              "Content-Type": "application/json",
-              "requestUId": crypto.randomUUID()
-            }
-          }
-        );
-        
-        const qrRawData = response.data.data.qrRawData;
-        const qrDataUrl = await QRCode.toDataURL(qrRawData, { width: 300 });
-        qrBase64 = qrDataUrl.split(',')[1];
-        console.log("✅ SCB QR created");
-      } catch (scbError) {
-        console.error("SCB API failed, using mock:", scbError.message);
-        qrBase64 = await createMockQR(amount, transactionId);
+    const token = await getSCBAccessToken();
+    
+    const qrPayload = {
+      billerId: SCB_CONFIG.billerId,
+      amount: amount.toString(),
+      ref1: transactionId,
+      ref2: "CLEANCARE",
+      ref3: "VENDING01"
+    };
+    
+    console.log("📤 QR Payload:", JSON.stringify(qrPayload, null, 2));
+    
+    const response = await axios.post(
+      `${SCB_CONFIG.baseURL}/v1/billpayment/billers/${SCB_CONFIG.billerId}/qr30`,
+      qrPayload,
+      {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "requestUId": crypto.randomUUID()
+        }
       }
-    } else {
-      qrBase64 = await createMockQR(amount, transactionId);
-      console.log("✅ MOCK QR created");
-    }
-
+    );
+    
+    const qrRawData = response.data.data.qrRawData;
+    console.log("✅ QR Raw Data received");
+    
+    const qrDataUrl = await QRCode.toDataURL(qrRawData, {
+      width: 300,
+      margin: 2,
+      color: { dark: '#000000', light: '#FFFFFF' }
+    });
+    
+    const qrBase64 = qrDataUrl.split(',')[1];
+    
     payments[transactionId] = {
       status: "pending",
       amount: amount,
       createdAt: Date.now(),
       dispensed: false
     };
+
+    console.log(`🆕 Created: ${transactionId} (${amount}฿)`);
 
     res.json({
       success: true,
@@ -142,8 +118,12 @@ app.post("/api/create-qr", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ Error:", error.message);
-    res.status(500).json({ success: false, message: error.message });
+    console.error("❌ Create QR error:", error.response?.data || error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to create QR code",
+      error: error.response?.data || error.message
+    });
   }
 });
 
@@ -166,7 +146,7 @@ app.post("/api/confirm-dispense", (req, res) => {
   res.json({ success: true });
 });
 
-// ================= Mock Pay =================
+// ================= Mock Pay (สำหรับทดสอบ) =================
 app.get("/mock-pay/:id", (req, res) => {
   const id = req.params.id;
   if (payments[id]) {
@@ -203,7 +183,7 @@ app.get("/dashboard", (req, res) => {
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>CleanCare Payment Server</title>
+      <title>SCB Mae Manee Payment</title>
       <style>
         body { font-family: Arial; margin: 20px; background: #f5f5f5; }
         .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }
@@ -215,8 +195,8 @@ app.get("/dashboard", (req, res) => {
       </style>
     </head>
     <body>
-      <h1>💰 CleanCare Payment Server</h1>
-      <p>🔧 Status: ✅ Online | 📡 Mode: <strong>MOCK (Testing)</strong></p>
+      <h1>💰 SCB Mae Manee Payment Server</h1>
+      <p>🔧 Status: ✅ Online | 🏦 Mode: SCB (Biller ID: ${SCB_CONFIG.billerId})</p>
       <div class="stats">
         <div class="stat-card"><div>Total</div><div class="stat-value">${stats.total}</div></div>
         <div class="stat-card"><div>Paid</div><div class="stat-value" style="color:#4CAF50;">${stats.paid}</div></div>
@@ -234,12 +214,13 @@ app.get("/dashboard", (req, res) => {
 });
 
 app.get("/", (req, res) => res.redirect("/dashboard"));
-app.get("/health", (req, res) => res.json({ status: "ok", mode: "mock" }));
+app.get("/health", (req, res) => res.json({ status: "ok", mode: "scb" }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n========================================`);
-  console.log(`🚀 CleanCare Payment Server`);
+  console.log(`🚀 SCB Mae Manee Server`);
   console.log(`📍 http://localhost:${PORT}`);
+  console.log(`🏦 Biller ID: ${SCB_CONFIG.billerId}`);
   console.log(`========================================\n`);
 });
