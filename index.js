@@ -1,6 +1,4 @@
 const express = require("express");
-const axios = require("axios");
-const crypto = require("crypto");
 const cors = require("cors");
 const QRCode = require("qrcode");
 
@@ -8,76 +6,12 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ================= SCB Configuration =================
-const SCB_CONFIG = {
-  apiKey: "l766762dcf740d445b8392b0379b368d39",
-  apiSecret: "7779eeb12f6b4fd7bfeb5a809103b8ef",
-  merchantId: "249209341376854",      // จาก Merchant Information
-  terminalId: "476454428917361",      // จาก Terminal ID
-  walletId: "014033139550354",        // จาก Mae Manee Merchant Profile
-  citizenId: "7694554531712",         // จาก Citizen ID
-  baseURL: "https://api-sandbox.partners.scb/partners/sandbox/v1"
-};
+// ================= เปิด Mock Mode (ไม่ต้องใช้ Omise หรือ SCB) =================
+const USE_MOCK_QR = true;  // เปลี่ยนเป็น false เมื่อต้องการใช้ Gateway จริง
 
 let payments = {};
-let scb_access_token = null;
-let token_expiry = 0;
 
-// ================= Helper Functions =================
-function getLocalIP() {
-  const { networkInterfaces } = require('os');
-  const nets = networkInterfaces();
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
-        return net.address;
-      }
-    }
-  }
-  return 'localhost';
-}
-
-// ================= Get SCB Access Token =================
-async function getSCBAccessToken() {
-  if (scb_access_token && Date.now() < token_expiry) {
-    return scb_access_token;
-  }
-
-  try {
-    const stringToSign = `${SCB_CONFIG.apiKey}|${Date.now()}`;
-    const signature = crypto
-      .createHmac("sha256", SCB_CONFIG.apiSecret)
-      .update(stringToSign)
-      .digest("base64");
-
-    const response = await axios.post(
-      `${SCB_CONFIG.baseURL}/oauth/token`,
-      {
-        applicationKey: SCB_CONFIG.apiKey,
-        applicationSecret: SCB_CONFIG.apiSecret
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "resourceOwnerId": SCB_CONFIG.apiKey,
-          "requestUId": crypto.randomUUID(),
-          "signature": signature
-        }
-      }
-    );
-
-    scb_access_token = response.data.data.accessToken;
-    token_expiry = Date.now() + (response.data.data.expiresIn * 1000);
-    
-    console.log("✅ SCB Access Token obtained");
-    return scb_access_token;
-  } catch (error) {
-    console.error("❌ Failed to get SCB token:", error.response?.data || error.message);
-    throw error;
-  }
-}
-
-// ================= สร้าง QR Code ผ่าน SCB Mae Manee API =================
+// ================= สร้าง QR Code (Mock Mode) =================
 app.post("/api/create-qr", async (req, res) => {
   try {
     const { amount, currency = "THB", reference = "" } = req.body;
@@ -89,64 +23,33 @@ app.post("/api/create-qr", async (req, res) => {
       });
     }
 
-    console.log(`📱 Creating SCB Mae Manee QR for amount: ${amount} THB`);
+    console.log(`📱 Creating MOCK QR for amount: ${amount} THB`);
 
-    const transactionId = `TXN${Date.now()}${Math.floor(Math.random() * 10000)}`;
+    const transactionId = `MOCK_${Date.now()}${Math.floor(Math.random() * 10000)}`;
     
-    // 1. ขอ Access Token ก่อน
-    const token = await getSCBAccessToken();
+    // สร้าง Mock QR Payload
+    const mockPayload = `00020101021129370016A00000067701011101130066${transactionId}53037645804${amount}6304ABCD`;
     
-    // 2. สร้าง QR Code ผ่าน Mae Manee API
-    const qrPayload = {
-      merchantId: SCB_CONFIG.merchantId,
-      terminalId: SCB_CONFIG.terminalId,
-      walletId: SCB_CONFIG.walletId,
-      amount: amount.toString(),
-      transactionId: transactionId,
-      qrType: "PP",  // PromptPay QR
-      callbackUrl: "https://payment-server-jydm.onrender.com/webhook/scb",
-      reference: reference
-    };
-    
-    console.log("📤 QR Payload:", JSON.stringify(qrPayload, null, 2));
-    
-    const response = await axios.post(
-      `${SCB_CONFIG.baseURL}/payment/qr30/create`,
-      qrPayload,
-      {
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "requestUId": crypto.randomUUID()
-        }
-      }
-    );
-    
-    const qrRawData = response.data.data.qrRawData;
-    console.log("✅ QR Raw Data received, length:", qrRawData?.length);
-    
-    // 3. สร้าง QR Image จาก qrRawData
-    const qrDataUrl = await QRCode.toDataURL(qrRawData, {
+    // สร้าง QR Code Image
+    const qrDataUrl = await QRCode.toDataURL(mockPayload, {
       width: 300,
       margin: 2,
       color: { dark: '#000000', light: '#FFFFFF' }
     });
     
     const qrBase64 = qrDataUrl.split(',')[1];
-    
-    // 4. เก็บข้อมูล transaction
+
+    // เก็บข้อมูล transaction
     payments[transactionId] = {
       status: "pending",
       amount: amount,
       currency: currency,
       createdAt: Date.now(),
       reference: reference,
-      dispensed: false,
-      qrRawData: qrRawData,
-      scbTransactionId: response.data.data.transactionId
+      dispensed: false
     };
 
-    console.log(`🆕 Created transaction: ${transactionId} (${amount}฿)`);
+    console.log(`🆕 Created MOCK transaction: ${transactionId} (${amount}฿)`);
 
     res.json({
       success: true,
@@ -156,41 +59,17 @@ app.post("/api/create-qr", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ Create QR error:", error.response?.data || error.message);
+    console.error("❌ Create QR error:", error.message);
     res.status(500).json({ 
       success: false, 
       message: "Failed to create QR code",
-      error: error.response?.data || error.message
+      error: error.message
     });
   }
 });
 
-// ================= Webhook สำหรับ SCB Callback =================
-app.post("/webhook/scb", (req, res) => {
-  try {
-    const webhookData = req.body;
-    console.log("📞 SCB Webhook received:", JSON.stringify(webhookData, null, 2));
-
-    const transactionId = webhookData.transactionId || webhookData.data?.transactionId;
-    const paymentStatus = webhookData.status || webhookData.data?.status;
-    
-    if (transactionId && payments[transactionId]) {
-      if (paymentStatus === "SUCCESS" || paymentStatus === "PAID") {
-        payments[transactionId].status = "paid";
-        payments[transactionId].paidAt = Date.now();
-        console.log(`💰 PAID (webhook): ${transactionId}`);
-      }
-    }
-
-    res.status(200).send("OK");
-  } catch (error) {
-    console.error("❌ Webhook error:", error);
-    res.status(200).send("OK");
-  }
-});
-
-// ================= ตรวจสอบสถานะการชำระเงิน =================
-app.get("/api/check-payment", async (req, res) => {
+// ================= ตรวจสอบสถานะ =================
+app.get("/api/check-payment", (req, res) => {
   const transactionId = req.query.transaction_id;
 
   if (!transactionId) {
@@ -199,8 +78,6 @@ app.get("/api/check-payment", async (req, res) => {
       message: "Missing transaction_id" 
     });
   }
-
-  console.log(`🔍 Checking payment: ${transactionId}`);
 
   if (!payments[transactionId]) {
     return res.json({
@@ -212,40 +89,6 @@ app.get("/api/check-payment", async (req, res) => {
   }
 
   const payment = payments[transactionId];
-
-  if (payment.status === "paid") {
-    return res.json({
-      success: true,
-      status: "paid",
-      transaction_id: transactionId,
-      amount: payment.amount
-    });
-  }
-
-  // ตรวจสอบกับ SCB API
-  try {
-    const token = await getSCBAccessToken();
-    
-    const response = await axios.get(
-      `${SCB_CONFIG.baseURL}/payment/${payment.scbTransactionId}`,
-      {
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "requestUId": crypto.randomUUID()
-        }
-      }
-    );
-
-    const scbStatus = response.data.data.status;
-    
-    if (scbStatus === "SUCCESS" || scbStatus === "PAID") {
-      payment.status = "paid";
-      payment.paidAt = Date.now();
-      console.log(`💰 PAID (check): ${transactionId}`);
-    }
-  } catch (error) {
-    console.error("❌ Check payment error:", error.response?.data || error.message);
-  }
 
   res.json({
     success: true,
@@ -345,7 +188,6 @@ app.get("/dashboard", (req, res) => {
     total: Object.keys(payments).length,
     paid: Object.values(payments).filter(p => p.status === "paid").length,
     pending: Object.values(payments).filter(p => p.status === "pending").length,
-    dispensed: Object.values(payments).filter(p => p.dispensed).length,
     totalAmount: Object.values(payments).reduce((sum, p) => sum + p.amount, 0)
   };
   
@@ -367,7 +209,7 @@ app.get("/dashboard", (req, res) => {
     <html>
     <head>
       <meta charset="UTF-8">
-      <title>CleanCare - SCB Mae Manee Payment</title>
+      <title>CleanCare - Mock Payment Server</title>
       <style>
         body { font-family: 'Segoe UI', Arial, sans-serif; margin: 20px; background: #f5f5f5; }
         h1 { color: #333; }
@@ -398,9 +240,9 @@ app.get("/dashboard", (req, res) => {
       </style>
     </head>
     <body>
-      <h1>💰 CleanCare - SCB Mae Manee Payment</h1>
-      <p>🔧 Status: ✅ Online | 🏦 Mode: <strong>SCB Mae Manee (Sandbox)</strong></p>
-      <p>📱 PromptPay ID: ${SCB_CONFIG.citizenId}</p>
+      <h1>💰 CleanCare - Mock Payment Server</h1>
+      <p>🔧 Status: ✅ Online | 📡 Mode: <strong>MOCK (Testing Only)</strong></p>
+      <p>💡 สำหรับทดสอบ: กด "Mock Pay" เพื่อจำลองการชำระเงิน</p>
       
       <div class="stats">
         <div class="stat-card"><div>Total</div><div class="stat-value">${stats.total}</div></div>
@@ -419,49 +261,21 @@ app.get("/dashboard", (req, res) => {
   `);
 });
 
-// ================= Health Check =================
 app.get("/health", (req, res) => {
-  res.json({ 
-    status: "healthy", 
-    uptime: process.uptime(), 
-    mode: "SCB Mae Manee",
-    token_valid: scb_access_token ? Date.now() < token_expiry : false
-  });
+  res.json({ status: "healthy", uptime: process.uptime(), mode: "mock" });
 });
 
-// ================= Root Redirect =================
 app.get("/", (req, res) => {
   res.redirect("/dashboard");
 });
 
-// ================= Start Server =================
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n========================================`);
-  console.log(`🚀 CleanCare - SCB Mae Manee Server`);
+  console.log(`🚀 CleanCare Mock Payment Server`);
   console.log(`========================================`);
   console.log(`📍 Local: http://localhost:${PORT}`);
   console.log(`📍 Dashboard: http://localhost:${PORT}/dashboard`);
-  console.log(`🏦 Mode: SCB Mae Manee (Sandbox)`);
-  console.log(`📱 PromptPay ID: ${SCB_CONFIG.citizenId}`);
-  console.log(`🆔 Merchant ID: ${SCB_CONFIG.merchantId}`);
+  console.log(`📡 Mode: MOCK (Testing Only)`);
   console.log(`========================================\n`);
 });
-
-// ================= Auto Cleanup (every 10 minutes) =================
-setInterval(() => {
-  const now = Date.now();
-  let removed = 0;
-  for (const [id, data] of Object.entries(payments)) {
-    if (data.status === "pending" && now - data.createdAt > 10 * 60 * 1000) {
-      delete payments[id];
-      removed++;
-    }
-    if (data.status === "paid" && data.dispensed && now - data.dispensedAt > 60 * 60 * 1000) {
-      delete payments[id];
-      removed++;
-    }
-  }
-  if (removed > 0) console.log(`🧹 Cleaned up ${removed} old transactions`);
-}, 10 * 60 * 1000);
