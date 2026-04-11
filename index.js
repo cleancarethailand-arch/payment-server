@@ -7,7 +7,8 @@ app.use(express.json());
 app.use(cors());
 
 // ================= เปิด Mock Mode (ไม่ต้องใช้ Omise หรือ SCB) =================
-const USE_MOCK_QR = true;  // เปลี่ยนเป็น false เมื่อต้องการใช้ Gateway จริง
+//const USE_MOCK_QR = true;  // เปลี่ยนเป็น false เมื่อต้องการใช้ Gateway จริง
+const USE_MOCK_QR = false;  // เปลี่ยนเป็น true เมื่อต้องการใช้ Gateway จำลอง
 
 let payments = {};
 
