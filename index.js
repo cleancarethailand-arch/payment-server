@@ -12,7 +12,10 @@ app.use(cors());
 const SCB_CONFIG = {
   apiKey: "l766762dcf740d445b8392b0379b368d39",
   apiSecret: "7779eeb12f6b4fd7bfeb5a809103b8ef",
-  billerId: "348148888978867",
+  billerId: "014000009602327",        // 🔴 Biller ID จากแอป Mae Manee
+  merchantId: "249209341376854",
+  terminalId: "476454428917361",
+  corporateId: "24164708979008309077",
   baseURL: "https://api-sandbox.partners.scb/partners/sandbox/v1"
 };
 
